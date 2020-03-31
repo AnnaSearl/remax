@@ -7,22 +7,18 @@ import MiniCssExtractPlugin from 'mini-css-extract-plugin';
 import { CleanWebpackPlugin } from 'clean-webpack-plugin';
 import pxToUnits from '@remax/postcss-px2units';
 import { RemaxOptions } from 'remax-types';
-import { Platform } from './platform';
+import { Platform } from '../build/platform';
 import extensions, { matcher } from '../extensions';
 import getEntries from '../getEntries';
-import * as styleConfig from './styleConfig';
-import * as TurboPages from './turboPages';
-import * as staticCompiler from './babel/compiler/static';
-import app from './babel/app';
-import page from './babel/page';
-import fixRegeneratorRuntime from './babel/fixRegeneratorRuntime';
-import nativeComponentsBabelPlugin from './babel/nativeComponents/babelPlugin';
-import components from './babel/components';
-import * as RemaxPlugins from './webpack/plugins';
-import alias from './alias';
-import API from '../API';
-import getEnvironment from './env';
-import * as platform from './platform';
+import * as styleConfig from '../build/styleConfig';
+import app from '../build/plugins/app';
+import page from '../build/plugins/page';
+// import fixRegeneratorRuntime from './plugins/fixRegeneratorRuntime';
+import nativeComponentsBabelPlugin from '../build/plugins/nativeComponents/babelPlugin';
+import components from '../build/plugins/components';
+import * as RemaxPlugins from '../build/webpack/plugins';
+import alias from '../build/alias';
+import getEnvironment from '../build/env';
 
 const config = new Config();
 
@@ -40,8 +36,6 @@ function useLoader(id: string) {
 }
 
 function prepare(options: RemaxOptions, target: Platform) {
-  const meta = API.getMeta();
-  const turboPagesEnabled = options.turboPages && options.turboPages.length > 0;
   const entries = getEntries(options);
   const entryMap = [entries.app, ...entries.pages].reduce<any>((m, entry) => {
     const ext = path.extname(entry);
@@ -49,48 +43,27 @@ function prepare(options: RemaxOptions, target: Platform) {
     m[name] = entry;
     return m;
   }, {});
-  const stubModules = platform.mini
-    .filter(name => API.adapter.target !== name)
-    .reduce<string[]>((acc, name) => [...acc, `${name}/esm/api`, `${name}/esm/hostComponents`], []);
-
   const env = getEnvironment(options, target);
-  const publicPath = '/';
 
   return {
-    meta,
-    turboPagesEnabled,
     entries,
     entryMap,
-    stubModules,
     env,
-    publicPath,
   };
 }
 
-export default function webpackConfig(options: RemaxOptions, target: PlatformTarget): Configuration {
-  const { meta, turboPagesEnabled, entries, entryMap, stubModules, env, publicPath } = prepare(options, target);
-  const styleGroup = styleConfig.entryGroup(Object.keys(entryMap), meta);
+export default function webpackConfig(options: RemaxOptions, target: Platform): Configuration {
+  const { entries, entryMap, env } = prepare(options, target);
 
-  for (const entry in entryMap) {
-    config.entry(entry).add(entryMap[entry]);
-  }
+  config.entry('index').add('src/index.js');
 
-  config.devtool(false);
+  config.devtool(process.env.NODE_ENV === 'development' ? 'cheap-module-source-map' : false);
   config.mode((process.env.NODE_ENV as any) || 'development');
   config.context(options.cwd);
   config.resolve.extensions.merge(extensions);
   config.resolve.alias.merge(alias(options));
   config.output.path(path.join(options.cwd, options.output));
   config.output.filename('[name].js');
-  config.output.globalObject(meta.global);
-  config.output.publicPath(publicPath);
-  config.optimization.runtimeChunk({ name: 'runtime' });
-  config.optimization.splitChunks({
-    chunks: 'initial',
-    cacheGroups: {
-      ...styleGroup,
-    },
-  });
 
   config.module
     .rule('createAppOrPageConfig')
@@ -105,42 +78,17 @@ export default function webpackConfig(options: RemaxOptions, target: PlatformTar
       reactPreset: false,
     });
 
-  // turbo pages
-  if (turboPagesEnabled) {
-    config.module
-      .rule('staticCompilation')
-      .test(matcher)
-      .include.add(TurboPages.filter(entries, options))
-      .end()
-      .use('babel')
-      .loader(useLoader('babel'))
-      .options({
-        usePlugins: [staticCompiler.preprocess],
-        reactPreset: false,
-      })
-      .end()
-      .use('babel')
-      .loader(useLoader('babel'))
-      .options({
-        usePlugins: [staticCompiler.render],
-        reactPreset: false,
-      })
-      .end()
-      .use('babel')
-      .loader(useLoader('babel'))
-      .options({
-        usePlugins: [staticCompiler.postProcess],
-        reactPreset: false,
-      });
-  }
-
   config.module
     .rule('compilation')
     .test(matcher)
     .use('babel')
     .loader(useLoader('babel'))
     .options({
-      usePlugins: [nativeComponentsBabelPlugin(options), components(options), fixRegeneratorRuntime],
+      usePlugins: [
+        nativeComponentsBabelPlugin(options),
+        components(options),
+        // fixRegeneratorRuntime
+      ],
       reactPreset: true,
     });
 
@@ -163,8 +111,8 @@ export default function webpackConfig(options: RemaxOptions, target: PlatformTar
 
   let stylesRule = config.module
     .rule('styles')
-    .test(styleConfig.styleMatcher)
-    .exclude.add(cssModuleConfig.enabled ? cssModuleConfig.cssModuleMatcher : '')
+    .test(/\.(css|less|sass|stylus)$/i)
+    .exclude.add(cssModuleConfig.enabled ? cssModuleConfig.regExp : '')
     .end()
     .use('cssExtract')
     .loader(MiniCssExtractPlugin.loader)
@@ -188,8 +136,8 @@ export default function webpackConfig(options: RemaxOptions, target: PlatformTar
   if (cssModuleConfig.enabled) {
     stylesRule = config.module
       .rule('cssModulesStyles')
-      .test(cssModuleConfig.cssModuleMatcher)
-      .include.add(cssModuleConfig.cssModuleMatcher)
+      .test(cssModuleConfig.regExp)
+      .include.add(cssModuleConfig.regExp)
       .end()
       .use(MiniCssExtractPlugin.loader)
       .loader(MiniCssExtractPlugin.loader)
@@ -212,22 +160,10 @@ export default function webpackConfig(options: RemaxOptions, target: PlatformTar
   }
 
   config.module
-    .rule('stub')
-    .test(matcher)
-    .use('stub')
-    .loader(useLoader('stub'))
-    .options({
-      modules: stubModules,
-    });
-
-  config.module
     .rule('json')
     .test(/\.json$/)
     .use('json')
-    .loader(useLoader('json'))
-    .options({
-      modules: stubModules,
-    });
+    .loader(useLoader('json'));
 
   config.module
     .rule('remaxDefineVariables')
@@ -247,22 +183,35 @@ export default function webpackConfig(options: RemaxOptions, target: PlatformTar
     .use('resolve-platform')
     .loader(useLoader('resolve-platform'));
 
+  config.plugin('virtualModule').use(VirtualModulePlugin, [
+    {
+      moduleName: 'src/index.js',
+      contents: JSON.stringify({ greeting: 'Hello!' }),
+    },
+  ]);
+
   if (options.progress) {
-    config.plugin('progress').use(ProgressPlugin);
+    config.plugin('progress').use(new ProgressPlugin());
   }
 
-  config.plugin('define').use(DefinePlugin, [env.stringified]);
-  config.plugin('cssExtract').use(MiniCssExtractPlugin, [{ filename: `[name]` }]);
-  config.plugin('optimizeEntries').use(RemaxPlugins.OptimizeEntries, [meta]);
-  config.plugin('nativeFiles').use(RemaxPlugins.NativeFiles, [options]);
+  config.plugin('define').use(new DefinePlugin(env.stringified));
+  config.plugin('cssExtract').use(
+    new MiniCssExtractPlugin({
+      filename: `[name]`,
+    })
+  );
+  config.plugin('optimizeEntries').use(new RemaxPlugins.OptimizeEntries(meta));
+  config.plugin('nativeFiles').use(new RemaxPlugins.NativeFiles(options));
 
   if (process.env.NODE_ENV === 'production') {
-    config.plugin('clean').use(CleanWebpackPlugin);
+    config.plugin('clean').use(new CleanWebpackPlugin() as any);
   }
 
   if (typeof options.configWebpack === 'function') {
     options.configWebpack(config);
   }
+
+  console.log(config.toConfig());
 
   return config.toConfig();
 }
